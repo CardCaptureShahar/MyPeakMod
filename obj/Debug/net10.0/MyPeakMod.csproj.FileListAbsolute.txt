@@ -1,0 +1,12 @@
+C:\Users\ajrtu\MyPeakMod\bin\Debug\net10.0\MyPeakMod.deps.json
+C:\Users\ajrtu\MyPeakMod\bin\Debug\net10.0\MyPeakMod.dll
+C:\Users\ajrtu\MyPeakMod\bin\Debug\net10.0\MyPeakMod.pdb
+C:\Users\ajrtu\MyPeakMod\obj\Debug\net10.0\MyPeakMod.csproj.AssemblyReference.cache
+C:\Users\ajrtu\MyPeakMod\obj\Debug\net10.0\MyPeakMod.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\ajrtu\MyPeakMod\obj\Debug\net10.0\MyPeakMod.AssemblyInfoInputs.cache
+C:\Users\ajrtu\MyPeakMod\obj\Debug\net10.0\MyPeakMod.AssemblyInfo.cs
+C:\Users\ajrtu\MyPeakMod\obj\Debug\net10.0\MyPeakMod.csproj.CoreCompileInputs.cache
+C:\Users\ajrtu\MyPeakMod\obj\Debug\net10.0\MyPeakMod.dll
+C:\Users\ajrtu\MyPeakMod\obj\Debug\net10.0\refint\MyPeakMod.dll
+C:\Users\ajrtu\MyPeakMod\obj\Debug\net10.0\MyPeakMod.pdb
+C:\Users\ajrtu\MyPeakMod\obj\Debug\net10.0\ref\MyPeakMod.dll
