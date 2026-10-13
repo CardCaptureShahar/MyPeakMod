@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace MyPeakMod
 {
-    [BepInPlugin("com.shahar.mypeakmod", "MyPeakMod", "1.0.2")]
+    [BepInPlugin("com.shahar.mypeakmod", "MyPeakMod", "1.0.4")]
     public class Plugin : BaseUnityPlugin
     {
         private const BindingFlags Members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -20,7 +20,10 @@ namespace MyPeakMod
 
         private void Awake()
         {
-            Logger.LogInfo("[MyPeakMod] Mod initialized successfully! Trail diagnostic build 1.0.2");
+            Logger.LogInfo("[MyPeakMod] Mod initialized successfully! Trail diagnostic build 1.0.4");
+            var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
+            Logger.LogInfo("[MyPeakMod] Active render pipeline: "
+                + (pipeline == null ? "null (Built-in RP)" : pipeline.GetType().FullName));
         }
 
         private void Update()
@@ -102,17 +105,17 @@ namespace MyPeakMod
                     // Scene-root anchor: no inherited rig scale or rotation.
                     var anchorGo = new GameObject("ModTrailAnchor");
                     var anchor = anchorGo.transform;
-                    anchor.position = motionTransform.position + Vector3.up * 1.2f;
+                    anchor.position = motionTransform.position + Vector3.up * 0.05f;
                     anchor.rotation = Quaternion.identity;
                     anchor.localScale = Vector3.one;
                     var trail = anchorGo.AddComponent<TrailRenderer>();
 
                     trail.sharedMaterial = trailMaterial;
-                    trail.time = 3f;
+                    trail.time = 15f;
                     trail.startWidth = 0.3f;
                     trail.endWidth = 0.05f;
                     trail.widthMultiplier = 1f;
-                    trail.minVertexDistance = 0.02f;
+                    trail.minVertexDistance = 0.05f;
                     trail.alignment = LineAlignment.View;
                     trail.autodestruct = false;
                     trail.allowOcclusionWhenDynamic = false;
@@ -148,7 +151,7 @@ namespace MyPeakMod
             foreach (var trail in playerTrails)
             {
                 var target = targets[trail];
-                trail.transform.position = target.position + Vector3.up * 1.2f;
+                trail.transform.position = target.position + Vector3.up * 0.05f;
                 // Keep the anchor independent even if the target's rig changes scale/rotation.
                 trail.transform.rotation = Quaternion.identity;
                 trail.transform.localScale = Vector3.one;
@@ -208,12 +211,16 @@ namespace MyPeakMod
         private bool TryCreateMaterial()
         {
             if (trailMaterial != null) return true;
-            // The existing PEAKTrails mod uses Sprites/Default. Check support, then try fallbacks.
-            var names = new[] { "Sprites/Default", "Legacy Shaders/Particles/Additive",
-                "Particles/Standard Unlit", "Universal Render Pipeline/Particles/Unlit", "Unlit/Color" };
+            // Diagnostic priority order. isSupported checks GPU/fallback support, not pipeline compatibility.
+            var names = new[] { "Universal Render Pipeline/Particles/Unlit",
+                "Universal Render Pipeline/Unlit", "Universal Render Pipeline/Simple Lit",
+                "Sprites/Default", "Legacy Shaders/Particles/Additive" };
             foreach (var name in names)
             {
                 var shader = Shader.Find(name);
+                Logger.LogInfo("[MyPeakMod] Shader candidate: " + name
+                    + "; found=" + (shader != null)
+                    + "; isSupported=" + (shader != null && shader.isSupported));
                 if (shader == null || !shader.isSupported) continue;
                 trailMaterial = new Material(shader);
                 PrepareMaterial(trailMaterial);
@@ -263,6 +270,27 @@ namespace MyPeakMod
             if (material.HasProperty("_MainTex")) material.SetTexture("_MainTex", Texture2D.whiteTexture);
             if (material.HasProperty("_BaseMap")) material.SetTexture("_BaseMap", Texture2D.whiteTexture);
             if (material.HasProperty("_Cull")) material.SetInt("_Cull", 0);
+            if (material.HasProperty("_Surface"))
+            {
+                // _Surface alone does not configure runtime blending or shader keywords.
+                material.SetFloat("_Surface", 1f);
+                if (material.HasProperty("_Blend")) material.SetFloat("_Blend", 0f);
+                if (material.HasProperty("_SrcBlend")) material.SetInt("_SrcBlend", 5); // SrcAlpha
+                if (material.HasProperty("_DstBlend")) material.SetInt("_DstBlend", 10); // OneMinusSrcAlpha
+                if (material.HasProperty("_SrcBlendAlpha")) material.SetInt("_SrcBlendAlpha", 1);
+                if (material.HasProperty("_DstBlendAlpha")) material.SetInt("_DstBlendAlpha", 10);
+                if (material.HasProperty("_ZWrite")) material.SetInt("_ZWrite", 0);
+                if (material.HasProperty("_AlphaClip")) material.SetFloat("_AlphaClip", 0f);
+                material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+                material.DisableKeyword("_ALPHATEST_ON");
+                material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+                material.DisableKeyword("_ALPHAMODULATE_ON");
+                material.SetOverrideTag("RenderType", "Transparent");
+                material.renderQueue = 3000;
+            }
+            if (material.shader != null && material.shader.name.StartsWith("Universal Render Pipeline/", StringComparison.Ordinal)
+                && material.shader.name.IndexOf("Unlit", StringComparison.OrdinalIgnoreCase) >= 0)
+                material.renderQueue = 3000;
         }
 
         private static Camera GetWorldCamera()
