@@ -63,13 +63,21 @@ namespace MyPeakMod
                     if (!isPlayer)
                         continue;
 
-                    var trail = playerObject.GetComponent<TrailRenderer>();
+                    var anchor = playerObject.transform.Find("ModTrailAnchor");
+                    TrailRenderer trail = anchor != null ? anchor.GetComponent<TrailRenderer>() : null;
+
                     if (trail == null)
                     {
-                        trail = playerObject.AddComponent<TrailRenderer>();
-                        trail.time = 0.8f;
-                        trail.startWidth = 0.4f;
+                        var anchorGo = new GameObject("ModTrailAnchor");
+                        anchorGo.transform.SetParent(playerObject.transform, false);
+                        anchorGo.transform.localPosition = new Vector3(0f, 1.2f, 0f);
+
+                        trail = anchorGo.AddComponent<TrailRenderer>();
+                        trail.time = 3f;
+                        trail.startWidth = 0.3f;
                         trail.endWidth = 0f;
+                        trail.minVertexDistance = 0.1f;
+                        trail.emitting = true;
 
                         var gradient = new Gradient();
                         gradient.SetKeys(
@@ -80,7 +88,8 @@ namespace MyPeakMod
                         var shader = Shader.Find("Sprites/Default");
                         if (shader != null)
                             trail.material = new Material(shader);
-                            trail.enabled = false;
+
+                        trail.enabled = false;
                         Logger.LogInfo("[MyPeakMod] Trail attached to: " + playerObject.name);
                     }
 
