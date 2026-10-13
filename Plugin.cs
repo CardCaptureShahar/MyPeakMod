@@ -1,23 +1,31 @@
+#nullable disable
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using BepInEx;
 using UnityEngine;
 
 namespace MyPeakMod
 {
-    [BepInPlugin("com.shahar.mypeakmod", "MyPeakMod", "1.0.0")]
+    [BepInPlugin("com.shahar.mypeakmod", "MyPeakMod", "1.0.2")]
     public class Plugin : BaseUnityPlugin
     {
+        private const BindingFlags Members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         private readonly List<TrailRenderer> playerTrails = new List<TrailRenderer>();
-        private float scanTimer = 0f;
+        private readonly Dictionary<TrailRenderer, Transform> targets = new Dictionary<TrailRenderer, Transform>();
+        private Material trailMaterial;
+        private bool trailsEnabled;
+        private float scanTimer;
+        private float diagnosticTimer;
 
         private void Awake()
         {
-            Logger.LogInfo("[MyPeakMod] Mod initialized successfully!");
+            Logger.LogInfo("[MyPeakMod] Mod initialized successfully! Trail diagnostic build 1.0.2");
         }
 
         private void Update()
         {
+            RemoveDestroyedTargets();
             scanTimer -= Time.deltaTime;
             if (scanTimer <= 0f)
             {
@@ -25,82 +33,267 @@ namespace MyPeakMod
                 ScanForPlayers();
             }
 
-            if (!Input.GetKeyDown(KeyCode.K) || playerTrails.Count == 0)
-                return;
-
-            var enableTrails = false;
-            foreach (var trail in playerTrails)
+            if (Input.GetKeyDown(KeyCode.K))
             {
-                if (!trail.enabled) { enableTrails = true; break; }
+                trailsEnabled = !trailsEnabled;
+                foreach (var trail in playerTrails)
+                {
+                    trail.Clear();
+                    trail.enabled = trailsEnabled;
+                    trail.emitting = trailsEnabled;
+                }
+                Logger.LogInfo("[MyPeakMod] Trails " + (trailsEnabled ? "enabled" : "disabled")
+                    + " (attached: " + playerTrails.Count + ")");
             }
-            foreach (var trail in playerTrails)
-                trail.enabled = enableTrails;
 
-            Logger.LogInfo("[MyPeakMod] Trails " + (enableTrails ? "enabled" : "disabled"));
+            diagnosticTimer -= Time.deltaTime;
+            if (trailsEnabled && diagnosticTimer <= 0f)
+            {
+                diagnosticTimer = 5f;
+                var camera = GetWorldCamera();
+                foreach (var trail in playerTrails)
+                {
+                    var material = trail.sharedMaterial;
+                    Logger.LogInfo("[MyPeakMod] Trail diagnostic: target=" + targets[trail].name
+                        + ", anchorScale=" + trail.transform.lossyScale
+                        + ", targetScale=" + targets[trail].lossyScale
+                        + ", position=" + trail.transform.position
+                        + ", points=" + trail.positionCount
+                        + ", enabled=" + trail.enabled + ", emitting=" + trail.emitting
+                        + ", layer=" + trail.gameObject.layer
+                        + ", camera=" + (camera != null ? camera.name : "NONE")
+                        + ", cameraIncludesLayer=" + (camera != null && (camera.cullingMask & (1 << trail.gameObject.layer)) != 0)
+                        + ", material=" + (material != null ? material.name : "NONE")
+                        + ", shader=" + (material != null && material.shader != null ? material.shader.name : "NONE"));
+                }
+            }
         }
 
         private void ScanForPlayers()
         {
             try
             {
-                playerTrails.RemoveAll(t => t == null);
                 var gameObjects = UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None);
                 foreach (var playerObject in gameObjects)
                 {
                     if (playerObject == null || !playerObject.activeInHierarchy)
                         continue;
-
                     var playerName = playerObject.name;
                     if (playerName.Contains("Canvas", StringComparison.OrdinalIgnoreCase)
                         || playerName.Contains("Voice", StringComparison.OrdinalIgnoreCase)
                         || playerName.Contains("Chest", StringComparison.OrdinalIgnoreCase)
                         || playerName.Contains("UI", StringComparison.OrdinalIgnoreCase)
-                        || playerName.Contains("MainCamera", StringComparison.OrdinalIgnoreCase))
+                        || playerName.Contains("MainCamera", StringComparison.OrdinalIgnoreCase)
+                        || playerName == "ModTrailAnchor")
                         continue;
 
-                    var isPlayer = playerObject.GetComponent<CharacterController>() != null
-                        || playerName.Contains("Player", StringComparison.OrdinalIgnoreCase);
-                    if (!isPlayer)
-                        continue;
+                    // Only a real PEAK Character with an animated movement transform qualifies.
+                    var character = FindCharacter(playerObject);
+                    if (character == null) continue;
+                    var motionTransform = GetAnimatedTransform(character);
+                    if (motionTransform == null) continue;
+                    var alreadyAttached = false;
+                    foreach (var target in targets.Values)
+                        if (target == motionTransform) { alreadyAttached = true; break; }
+                    if (alreadyAttached) continue;
+                    if (!TryCreateMaterial())
+                        continue; // Retry on the next scan after scene materials load.
 
-                    var anchor = playerObject.transform.Find("ModTrailAnchor");
-                    TrailRenderer trail = anchor != null ? anchor.GetComponent<TrailRenderer>() : null;
+                    // Scene-root anchor: no inherited rig scale or rotation.
+                    var anchorGo = new GameObject("ModTrailAnchor");
+                    var anchor = anchorGo.transform;
+                    anchor.position = motionTransform.position + Vector3.up * 1.2f;
+                    anchor.rotation = Quaternion.identity;
+                    anchor.localScale = Vector3.one;
+                    var trail = anchorGo.AddComponent<TrailRenderer>();
 
-                    if (trail == null)
-                    {
-                        var anchorGo = new GameObject("ModTrailAnchor");
-                        anchorGo.transform.SetParent(playerObject.transform, false);
-                        anchorGo.transform.localPosition = new Vector3(0f, 1.2f, 0f);
-
-                        trail = anchorGo.AddComponent<TrailRenderer>();
-                        trail.time = 3f;
-                        trail.startWidth = 0.3f;
-                        trail.endWidth = 0f;
-                        trail.minVertexDistance = 0.1f;
-                        trail.emitting = true;
-
-                        var gradient = new Gradient();
-                        gradient.SetKeys(
-                            new[] { new GradientColorKey(Color.red, 0f), new GradientColorKey(Color.yellow, 1f) },
-                            new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0f, 1f) });
-                        trail.colorGradient = gradient;
-
-                        var shader = Shader.Find("Sprites/Default");
-                        if (shader != null)
-                            trail.material = new Material(shader);
-
-                        trail.enabled = false;
-                        Logger.LogInfo("[MyPeakMod] Trail attached to: " + playerObject.name);
-                    }
-
-                    if (!playerTrails.Contains(trail))
-                        playerTrails.Add(trail);
+                    trail.sharedMaterial = trailMaterial;
+                    trail.time = 3f;
+                    trail.startWidth = 0.3f;
+                    trail.endWidth = 0.05f;
+                    trail.widthMultiplier = 1f;
+                    trail.minVertexDistance = 0.02f;
+                    trail.alignment = LineAlignment.View;
+                    trail.autodestruct = false;
+                    trail.allowOcclusionWhenDynamic = false;
+                    trail.generateLightingData = true;
+                    var gradient = new Gradient();
+                    gradient.SetKeys(
+                        new[] { new GradientColorKey(Color.red, 0f), new GradientColorKey(Color.yellow, 1f) },
+                        new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0.15f, 1f) });
+                    trail.colorGradient = gradient;
+                    trail.Clear();
+                    trail.enabled = trailsEnabled;
+                    trail.emitting = true;
+                    UpdateCameraLayer(anchor.gameObject);
+                    playerTrails.Add(trail);
+                    targets.Add(trail, motionTransform);
+                    Logger.LogInfo("[MyPeakMod] Trail attached to: " + playerName);
+                    Logger.LogInfo("[MyPeakMod] Trail anchor world position: " + anchor.position
+                        + "; motion transform=" + motionTransform.name
+                        + "; target.lossyScale=" + motionTransform.lossyScale
+                        + "; anchor.lossyScale=" + anchor.lossyScale
+                        + "; material=" + trailMaterial.name + "; shader=" + trailMaterial.shader.name);
                 }
             }
             catch (Exception exception)
             {
-                Logger.LogWarning("Trail scan failed safely: " + exception.Message);
+                Logger.LogWarning("Trail scan failed safely: " + exception);
             }
+        }
+
+        private void LateUpdate()
+        {
+            RemoveDestroyedTargets();
+            foreach (var trail in playerTrails)
+            {
+                var target = targets[trail];
+                trail.transform.position = target.position + Vector3.up * 1.2f;
+                // Keep the anchor independent even if the target's rig changes scale/rotation.
+                trail.transform.rotation = Quaternion.identity;
+                trail.transform.localScale = Vector3.one;
+                UpdateCameraLayer(trail.gameObject);
+                var active = trailsEnabled && target.gameObject.activeInHierarchy;
+                trail.enabled = active;
+                trail.emitting = active;
+            }
+        }
+
+        private void RemoveDestroyedTargets()
+        {
+            for (int i = playerTrails.Count - 1; i >= 0; i--)
+            {
+                var trail = playerTrails[i];
+                Transform target;
+                if (trail != null && targets.TryGetValue(trail, out target) && target != null)
+                    continue;
+                // Destroy scene-root anchors explicitly; they cannot die with a character parent.
+                if (trail != null) UnityEngine.Object.Destroy(trail.gameObject);
+                if (!ReferenceEquals(trail, null)) targets.Remove(trail);
+                playerTrails.RemoveAt(i);
+            }
+        }
+
+        private static Component FindCharacter(GameObject player)
+        {
+            foreach (var component in player.GetComponents<Component>())
+                if (component != null && component.GetType().Name == "Character")
+                    return component;
+            return null;
+        }
+
+        private static object ReadMember(object instance, string name)
+        {
+            if (instance == null) return null;
+            for (var type = instance.GetType(); type != null; type = type.BaseType)
+            {
+                var field = type.GetField(name, Members | BindingFlags.DeclaredOnly);
+                if (field != null) return field.GetValue(instance);
+                var property = type.GetProperty(name, Members | BindingFlags.DeclaredOnly);
+                if (property != null && property.GetIndexParameters().Length == 0)
+                    return property.GetValue(instance);
+            }
+            return null;
+        }
+
+        private static Transform GetAnimatedTransform(Component character)
+        {
+            var value = ReadMember(ReadMember(character, "refs"), "animationPositionTransform");
+            if (value is Transform transform) return transform;
+            if (value is Component component) return component.transform;
+            if (value is GameObject gameObject) return gameObject.transform;
+            return null;
+        }
+
+        private bool TryCreateMaterial()
+        {
+            if (trailMaterial != null) return true;
+            // The existing PEAKTrails mod uses Sprites/Default. Check support, then try fallbacks.
+            var names = new[] { "Sprites/Default", "Legacy Shaders/Particles/Additive",
+                "Particles/Standard Unlit", "Universal Render Pipeline/Particles/Unlit", "Unlit/Color" };
+            foreach (var name in names)
+            {
+                var shader = Shader.Find(name);
+                if (shader == null || !shader.isSupported) continue;
+                trailMaterial = new Material(shader);
+                PrepareMaterial(trailMaterial);
+                Logger.LogInfo("[MyPeakMod] Using trail shader: " + shader.name);
+                return true;
+            }
+
+            // Clone an actual loaded material, never modify a game object's shared material.
+            var renderers = UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None);
+            Material fallback = null;
+            foreach (var renderer in renderers)
+            {
+                if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy) continue;
+                foreach (var material in renderer.sharedMaterials)
+                {
+                    if (material == null || material.shader == null || !material.shader.isSupported
+                        || material.shader.name.StartsWith("Hidden/", StringComparison.Ordinal)) continue;
+                    if (fallback == null) fallback = material;
+                    var name = material.shader.name.ToLowerInvariant();
+                    if (renderer is TrailRenderer || renderer is LineRenderer
+                        || name.Contains("particle") || name.Contains("unlit") || name.Contains("sprite"))
+                    {
+                        fallback = material;
+                        goto Found;
+                    }
+                }
+            }
+        Found:
+            if (fallback == null)
+            {
+                Logger.LogWarning("[MyPeakMod] No supported trail shader or scene material available. Retrying in 2 seconds.");
+                return false;
+            }
+            trailMaterial = new Material(fallback);
+            PrepareMaterial(trailMaterial);
+            Logger.LogWarning("[MyPeakMod] Using cloned scene material shader: " + trailMaterial.shader.name
+                + ". This fallback is diagnostic, not guaranteed to support trail vertex colors.");
+            return true;
+        }
+
+        private static void PrepareMaterial(Material material)
+        {
+            material.name = "MyPeakMod_TrailMaterial";
+            if (material.HasProperty("_Color")) material.SetColor("_Color", Color.white);
+            if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", Color.white);
+            if (material.HasProperty("_TintColor")) material.SetColor("_TintColor", Color.white);
+            if (material.HasProperty("_MainTex")) material.SetTexture("_MainTex", Texture2D.whiteTexture);
+            if (material.HasProperty("_BaseMap")) material.SetTexture("_BaseMap", Texture2D.whiteTexture);
+            if (material.HasProperty("_Cull")) material.SetInt("_Cull", 0);
+        }
+
+        private static Camera GetWorldCamera()
+        {
+            var main = Camera.main;
+            if (main != null && main.isActiveAndEnabled) return main;
+            foreach (var camera in Camera.allCameras)
+                if (camera != null && camera.isActiveAndEnabled && camera.targetTexture == null
+                    && camera.cullingMask != 0) return camera;
+            return null;
+        }
+
+        private static void UpdateCameraLayer(GameObject anchor)
+        {
+            var camera = GetWorldCamera();
+            if (camera == null) return;
+            if ((camera.cullingMask & (1 << anchor.layer)) != 0) return;
+            // Change only the mod anchor, never the game's player layers or camera mask.
+            for (int layer = 0; layer < 32; layer++)
+                if ((camera.cullingMask & (1 << layer)) != 0)
+                {
+                    anchor.layer = layer;
+                    return;
+                }
+        }
+
+        private void OnDestroy()
+        {
+            foreach (var trail in playerTrails)
+                if (trail != null) UnityEngine.Object.Destroy(trail.gameObject);
+            if (trailMaterial != null) UnityEngine.Object.Destroy(trailMaterial);
         }
     }
 }
