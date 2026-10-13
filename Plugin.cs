@@ -7,12 +7,13 @@ using UnityEngine;
 
 namespace MyPeakMod
 {
-    [BepInPlugin("com.shahar.mypeakmod", "MyPeakMod", "1.0.4")]
+    [BepInPlugin("com.shahar.mypeakmod", "MyPeakMod", "1.0.5")]
     public class Plugin : BaseUnityPlugin
     {
         private const BindingFlags Members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         private readonly List<TrailRenderer> playerTrails = new List<TrailRenderer>();
         private readonly Dictionary<TrailRenderer, Transform> targets = new Dictionary<TrailRenderer, Transform>();
+        private readonly Dictionary<TrailRenderer, Material> coloredMaterials = new Dictionary<TrailRenderer, Material>();
         private Material trailMaterial;
         private bool trailsEnabled;
         private float scanTimer;
@@ -20,7 +21,7 @@ namespace MyPeakMod
 
         private void Awake()
         {
-            Logger.LogInfo("[MyPeakMod] Mod initialized successfully! Trail diagnostic build 1.0.4");
+            Logger.LogInfo("[MyPeakMod] Mod initialized successfully! Trail diagnostic build 1.0.5");
             var pipeline = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline;
             Logger.LogInfo("[MyPeakMod] Active render pipeline: "
                 + (pipeline == null ? "null (Built-in RP)" : pipeline.GetType().FullName));
@@ -110,7 +111,9 @@ namespace MyPeakMod
                     anchor.localScale = Vector3.one;
                     var trail = anchorGo.AddComponent<TrailRenderer>();
 
-                    trail.sharedMaterial = trailMaterial;
+                    var playerMaterial = new Material(trailMaterial);
+                    coloredMaterials.Add(trail, playerMaterial);
+                    trail.sharedMaterial = playerMaterial;
                     trail.time = 15f;
                     trail.startWidth = 0.3f;
                     trail.endWidth = 0.05f;
@@ -120,11 +123,11 @@ namespace MyPeakMod
                     trail.autodestruct = false;
                     trail.allowOcclusionWhenDynamic = false;
                     trail.generateLightingData = true;
-                    var gradient = new Gradient();
-                    gradient.SetKeys(
-                        new[] { new GradientColorKey(Color.red, 0f), new GradientColorKey(Color.yellow, 1f) },
-                        new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0.15f, 1f) });
-                    trail.colorGradient = gradient;
+                    string colorSource;
+                    var playerColor = GetPlayerColor(character, playerName, out colorSource);
+                    ApplyPlayerColor(trail, playerMaterial, playerColor);
+                    Logger.LogInfo("[MyPeakMod] Trail color for " + playerName + ": " + playerColor
+                        + "; source=" + colorSource);
                     trail.Clear();
                     trail.enabled = trailsEnabled;
                     trail.emitting = true;
@@ -172,7 +175,16 @@ namespace MyPeakMod
                     continue;
                 // Destroy scene-root anchors explicitly; they cannot die with a character parent.
                 if (trail != null) UnityEngine.Object.Destroy(trail.gameObject);
-                if (!ReferenceEquals(trail, null)) targets.Remove(trail);
+                if (!ReferenceEquals(trail, null))
+                {
+                    Material material;
+                    if (coloredMaterials.TryGetValue(trail, out material))
+                    {
+                        if (material != null) UnityEngine.Object.Destroy(material);
+                        coloredMaterials.Remove(trail);
+                    }
+                    targets.Remove(trail);
+                }
                 playerTrails.RemoveAt(i);
             }
         }
@@ -206,6 +218,57 @@ namespace MyPeakMod
             if (value is Component component) return component.transform;
             if (value is GameObject gameObject) return gameObject.transform;
             return null;
+        }
+
+        private static Color GetPlayerColor(Component character, string identity, out string source)
+        {
+            // PEAKTrails uses Character.refs.customization.PlayerColor.
+            // Reflection keeps this project independent of Assembly-CSharp references.
+            try
+            {
+                var customization = ReadMember(ReadMember(character, "refs"), "customization");
+                var value = ReadMember(customization, "PlayerColor");
+                if (value is Color color && !float.IsNaN(color.r) && !float.IsNaN(color.g)
+                    && !float.IsNaN(color.b) && !float.IsInfinity(color.r)
+                    && !float.IsInfinity(color.g) && !float.IsInfinity(color.b))
+                {
+                    source = "Character.refs.customization.PlayerColor";
+                    return new Color(Mathf.Clamp01(color.r), Mathf.Clamp01(color.g), Mathf.Clamp01(color.b), 1f);
+                }
+            }
+            catch (Exception) { } // A different game version can still use the identity fallback.
+
+            // Stable FNV-1a, not string.GetHashCode (which can vary across processes).
+            uint hash = 2166136261u;
+            unchecked
+            {
+                foreach (char c in identity ?? "Unknown Character")
+                {
+                    hash ^= c;
+                    hash *= 16777619u;
+                }
+            }
+            source = "deterministic character-name hash: " + identity;
+            return Color.HSVToRGB((hash % 3600u) / 3600f, 0.9f, 1f);
+        }
+
+        private static void ApplyPlayerColor(TrailRenderer trail, Material material, Color color)
+        {
+            var gradient = new Gradient();
+            gradient.SetKeys(
+                new[] { new GradientColorKey(color, 0f), new GradientColorKey(color, 1f) },
+                new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0.15f, 1f) });
+            trail.colorGradient = gradient;
+
+            // General URP Unlit/Lit can ignore trail vertex colors, so tint their own material.
+            // Particle/sprite shaders consume vertex color: keep their material white to avoid tinting twice.
+            var shaderName = material.shader.name;
+            bool usesVertexColor = shaderName.IndexOf("Particle", StringComparison.OrdinalIgnoreCase) >= 0
+                || shaderName.IndexOf("Sprite", StringComparison.OrdinalIgnoreCase) >= 0;
+            var tint = usesVertexColor ? Color.white : color;
+            if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", tint);
+            if (material.HasProperty("_Color")) material.SetColor("_Color", tint);
+            if (material.HasProperty("_TintColor")) material.SetColor("_TintColor", tint);
         }
 
         private bool TryCreateMaterial()
@@ -321,6 +384,9 @@ namespace MyPeakMod
         {
             foreach (var trail in playerTrails)
                 if (trail != null) UnityEngine.Object.Destroy(trail.gameObject);
+            foreach (var material in coloredMaterials.Values)
+                if (material != null) UnityEngine.Object.Destroy(material);
+            coloredMaterials.Clear();
             if (trailMaterial != null) UnityEngine.Object.Destroy(trailMaterial);
         }
     }
